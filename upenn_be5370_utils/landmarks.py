@@ -1,14 +1,33 @@
 import SimpleITK as sitk
 import numpy as np
 
-def hemi_landmark_thickness(segmentation_image, landmark_image, gray_matter_label=1):
+def make_phys_coord_grid(image):
+    grid_vox = np.stack(np.meshgrid(*[np.arange(k) for k in image.GetSize()]))
+    A = np.array(image.GetDirection()).reshape(3,3) @ np.diag(image.GetSpacing())
+    b = np.array(image.GetOrigin())
+    grid_phy = np.einsum('ij,jxyz->ixyz', A, grid_vox) + b[:,None,None,None]
+    grid_itk = sitk.GetImageFromArray(grid_phy.transpose(3,1,2,0), True)
+    grid_itk.CopyInformation(image)
+    return sitk.Cast(grid_itk, sitk.sitkVectorFloat32)
+
+def point_distance_image(grid_phy, point):
+    grid_x = sitk.VectorIndexSelectionCast(grid_phy, 0)
+    grid_y = sitk.VectorIndexSelectionCast(grid_phy, 1)
+    grid_z = sitk.VectorIndexSelectionCast(grid_phy, 2)
+    return sitk.Sqrt((grid_x - point[0])**2 + (grid_y - point[1])**2 + (grid_z - point[2])**2)
+
+def hemi_landmark_thickness(
+    segmentation_image, landmark_image, 
+    gray_matter_label=1, sphere_image=None):
     """
     Compute the thickness of a cortical segmentation at specific landmarks.
     Inputs:
         segmentation_image: filename of a hemisphere segmentation
         landmark_image: filename of an image containing landmarks
         gray_matter_label: label of the gray matter in the segmentation (default: 1)
+        sphere_image: optional output image to save maximum inscribed spheres
     """
+
     # Read the two images
     seg=sitk.ReadImage(segmentation_image, sitk.sitkUInt8)
     dots=sitk.ReadImage(landmark_image, sitk.sitkUInt8)
@@ -26,6 +45,11 @@ def hemi_landmark_thickness(segmentation_image, landmark_image, gray_matter_labe
     
     # Extract just the gray matter segmentation
     seg_bin = sitk.BinaryThreshold(seg, gray_matter_label, gray_matter_label)
+            
+    # If sphere image requested, compute a mesh grid for it
+    if sphere_image:
+        sphere_grid = make_phys_coord_grid(dots)
+        spheres = dots * 0. 
 
     # Find the center of each dot in the image
     stat_filter = sitk.LabelShapeStatisticsImageFilter()
@@ -63,20 +87,31 @@ def hemi_landmark_thickness(segmentation_image, landmark_image, gray_matter_labe
             seg_skel_thick = sitk.Cast(seg_skel, sitk.sitkFloat32) * seg_dmap
 
             # Compute the distance from the dot in physical units
-            grid_vox = np.stack(np.meshgrid(*[np.arange(k) for k in dot_roi.GetSize()]))
-            A = np.array(dot_roi.GetDirection()).reshape(3,3) @ np.diag(dot_roi.GetSpacing())
-            b = np.array(dot_roi.GetOrigin())
-            grid_phy = np.einsum('ij,jxyz->ixyz', A, grid_vox) + b[:,None,None,None]
-            dot_dist = np.sqrt(np.sum((grid_phy - np.array(dot_phy)[:,None,None,None])**2, 0))
-            dot_dmap = sitk.Cast(sitk.GetImageFromArray(dot_dist), sitk.sitkFloat32)
-            dot_dmap.CopyInformation(dot_roi)
+            grid_phy = make_phys_coord_grid(dot_roi) 
+            dot_dmap = point_distance_image(grid_phy, dot_phy)
 
             # Mask out the region on the skeleton where the distance from the dot is
             # less or equal to the radius, i.e., the dot is in the inscribed sphere
             dot_skel_mask = sitk.Cast(sitk.BinaryThreshold(seg_skel_thick - dot_dmap, 0, 1e100), sitk.sitkFloat32)
 
             # Report the thickness at this dot
-            dot_thickness[labels[label]] = 2.0 * np.max(sitk.GetArrayFromImage(dot_skel_mask * seg_skel_thick))
+            masked_skel = sitk.GetArrayFromImage(dot_skel_mask * seg_skel_thick)
+            dt = 2.0 * np.max(masked_skel)
+            dot_thickness[labels[label]] = dt
+
+            # Fill out the sphere image if requested
+            if sphere_image:
+                mib_center_vox = list(reversed([ int(x) for x in np.unravel_index(np.argmax(masked_skel), masked_skel.shape) ]))
+                print(mib_center_vox)
+                mib_center_phy = dot_roi.TransformIndexToPhysicalPoint(mib_center_vox)
+                mib_dmap = point_distance_image(sphere_grid, mib_center_phy)
+                img_sphere = sitk.BinaryThreshold(mib_dmap - dt / 2, -1e10, 0, label, 0)
+                spheres = sitk.Add(spheres, img_sphere)
+                print('added')
+
+    if sphere_image:
+        spheres = sitk.Cast(spheres, sitk.sitkUInt8)
+        sitk.WriteImage(spheres, sphere_image)
 
     # Return the dots thicknesses
     return dot_thickness
