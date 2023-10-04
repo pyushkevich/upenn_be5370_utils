@@ -1,0 +1,1 @@
+These images are for use in notebooks provided for the homework assignments.
