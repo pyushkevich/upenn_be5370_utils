@@ -392,12 +392,19 @@ def view_sitk(*images, cursor=None, vmin=None, vmax=None, cmap='gray', alpha=0.5
     # Compute vmin/vmax that will be used for each of the images
     vmin = [ np.quantile(v, 0.001) if vmin[j] is None else vmin[j] for j,v in enumerate(voxels) ]
     vmax = [ np.quantile(v, 0.999) if vmax[j] is None else vmax[j] for j,v in enumerate(voxels) ]
+    
+    # Preserve the original range for colorbar display
+    vmin_adj, vmax_adj = [], []
 
     # Adjust vmin/vmax for RGB images, because imshow only allows them to be in 0-1 range
     for j in range(len(voxels)):
         if iresam[j].GetNumberOfComponentsPerPixel() == 3:
-            voxels[j] = np.clip((voxels[j] - vmin[j]) / (vmin[j] - vmax[j]), 0, 1)
-            vmin[j], vmax[j] = 0, 1
+            voxels[j] = np.clip((voxels[j] - vmin[j]) / (vmax[j] - vmin[j]), 0, 1)
+            vmin_adj.append(0)
+            vmax_adj.append(1)
+        else:
+            vmin_adj.append(vmin[j])
+            vmax_adj.append(vmax[j])
 
     # Get the first (main) image and cursor position
     cursor = np.array(main.GetSize()) // 2 if cursor is None else cursor
@@ -408,7 +415,7 @@ def view_sitk(*images, cursor=None, vmin=None, vmax=None, cmap='gray', alpha=0.5
         # Iterate over the images in that tile
         for i, j in enumerate(tiles[t]):
             param = { 
-                'vmin': vmin[j], 'vmax': vmax[j], 
+                'vmin': vmin_adj[j], 'vmax': vmax_adj[j], 
                 'cmap': special_colormap(cmap[j]), 
                 'alpha': 1.0 if i == 0 else alpha }
 
@@ -428,7 +435,9 @@ def view_sitk(*images, cursor=None, vmin=None, vmax=None, cmap='gray', alpha=0.5
     for j in range(len(iresam)):
         ax_cb = fig.add_subplot(gss_cb[j])
         ax_cb.get_yaxis().set_visible(False)
-        ax_cb.imshow(np.linspace(vmin[j], vmax[j], 256)[None,:], cmap=cmap[j], vmin=vmin[j], vmax=vmax[j], aspect='auto')
+        ax_cb.imshow(np.linspace(vmin_adj[j], vmax_adj[j], 256)[None,:], 
+                     cmap=cmap[j], vmin=vmin_adj[j], vmax=vmax_adj[j], aspect='auto',
+                     extent=(vmin[j], vmax[j], 0, 1))
         auto_label = 'Main Image' if j == 0 else f'Overlay {j}'
         ax_cb.set_title(auto_label if name[j] is None else name[j], fontsize=10)
         
@@ -460,10 +469,13 @@ def view_sitk(*images, cursor=None, vmin=None, vmax=None, cmap='gray', alpha=0.5
 
     # Adjust width and height of the figure, leaving a fixed space for the colorbar
     if width:
-        height_tiles = ext_s[0] * width / (len(tiles) * (ext_s[1] + ext_c[1]))
-        height_colorbars = 0.7
         fig.set_figwidth(width) 
-        fig.set_figheight(height_tiles + height_colorbars + (0.3 if title else 0.0))
-        gs.set_height_ratios([height_tiles, height_colorbars])
+    else:
+        width = fig.get_figwidth()
+    height_tiles = ext_s[0] * width / (len(tiles) * (ext_s[1] + ext_c[1]))
+    height_colorbars = 0.7
+    fig.set_figwidth(width) 
+    fig.set_figheight(height_tiles + height_colorbars + (0.3 if title else 0.0))
+    gs.set_height_ratios([height_tiles, height_colorbars])
 
     return fig, axs
