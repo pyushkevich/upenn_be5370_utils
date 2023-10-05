@@ -242,7 +242,7 @@ def sitk_check_same_space(img, ref):
         return False
     
 
-def view_sitk_new(*images, cursor=None, vmin=None, vmax=None, cmap='gray', alpha=0.5, 
+def view_sitk(*images, cursor=None, vmin=None, vmax=None, cmap='gray', alpha=0.5, 
               name=None, width=None, layout='overlay', title=None):
     """
     Display a 3D SimpleITK image in a layout similar to ITK-SNAP.
