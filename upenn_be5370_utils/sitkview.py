@@ -242,13 +242,15 @@ def sitk_check_same_space(img, ref):
         return False
     
 
-def view_sitk(image, cursor=None, vmin=None, vmax=None, cmap='gray', alpha=0.5, name=None, width=None):
+def view_sitk_new(*images, cursor=None, vmin=None, vmax=None, cmap='gray', alpha=0.5, 
+              name=None, width=None, layout='overlay', title=None):
     """
     Display a 3D SimpleITK image in a layout similar to ITK-SNAP.
 
     Args:
-        image: 
-            A 3D SimpleITK image or a list/tuple of images to display. 
+        *images: 
+            One or more 3D SimpleITK images to display. Images can be single-component
+            or 3-component images. If 3-component, images are treated as RGB images.
         cursor: 
             The 3D coordinates of the crosshair in the image, defaults to the center 
             of the image.
@@ -261,23 +263,34 @@ def view_sitk(image, cursor=None, vmin=None, vmax=None, cmap='gray', alpha=0.5, 
         vmin, vmax:
             Intensity value mapped to the beginning/end of the color map. A number or 
             a list/tuple of numbers of the same size as `image`.
+        layout: 
+            How to lay out multiple images (i.e., when image is a list/tuple). Use 'o' or 'overlay' 
+            to plot images on top of each other with transparency, and 't' or 'tile' to tile images
+            next to each other. You can also specify an array of strings matching the number of images,
+            so that some images are tiled and some images are overlaid. You can also pass in a string
+            like 'ttt' or 'tot' instead of an array of strings.
         alpha:
-            Opacity for the overlays, only relevant when image is a list/tuple
+            Opacity for the 'overlay' mode
         width:
             The width of the figure, in inches. Same as calling set_figwidth() on the 
             figure returned by this function.
         name:
             Name of the image and overlays to display on the colorbar, a string or 
             a list/tuple of strings. 
+        title:
+            Overall title for the plot.
 
     Returns:
         fig, ax = view_sitk(image, ...) returns the handle to the figure and axes in 
         the same way as matplotlib.pyplot.subfigure
     """
 
-    # Is the image an array? If not make it an array of size 1
-    if type(image) is not list and type(image) is not tuple:
-        image = [ image ]
+    # Get the number of images
+    nimg = len(images)
+
+    # Check that the images are all SimpleITK images
+    if nimg == 0 or not all((isinstance(x, sitk.Image) and x.GetDimension()==3 for x in images)):
+        raise ValueError('Inputs to view_sitk must be 3D SimpleITK images')
 
     def plot_anat(ax, img, voxels, plane, is_discrete, cursor, **kwargs):
         if plane == 'axial':
@@ -323,9 +336,9 @@ def view_sitk(image, cursor=None, vmin=None, vmax=None, cmap='gray', alpha=0.5, 
     # have the same size as image, repeating them if necessary
     def p_match_len(x):
         if type(x) is not list and type(x) is not tuple:
-            return [x] * len(image)
-        elif len(cmap) != len(image):
-            return (x * len(image))[0:len(image)]
+            return [x] * nimg
+        elif len(x) != nimg:
+            return (x * nimg)[0:nimg]
         else:
             return x
 
@@ -335,68 +348,91 @@ def view_sitk(image, cursor=None, vmin=None, vmax=None, cmap='gray', alpha=0.5, 
     vmax = p_match_len(vmax)
     name = p_match_len(name)
 
+    # Process the layout
+    if type(layout) is str and layout not in ['tile', 'overlay', 't', 'o']:
+        layout = [ x for x in layout]
+    layout = p_match_len(layout)
+
     # Create the figure
     fig = plt.figure(layout="constrained", figsize=(8,4))
 
-    # Create a grid spec, which we will adjust later based on the size of the images
-    gs = gridspec.GridSpec(ncols=2, nrows=1, figure=fig)
-    axs = []
-    axs.append(fig.add_subplot(gs[0,0]))
-    axs.append(fig.add_subplot(gs[0,1], sharey=axs[0]))
-    axs[0].axis('off')
-    axs[1].axis('off')
+    # Form the layout. First find all the images that should be shown as separate tiles
+    tiles = [ [j] for j,l in enumerate(layout) if j==0 or l in ('t', 'tile')]
 
+    # Now for each tile add overlays
+    overlays = [ j for j,l in enumerate(layout) if j>0 and l in ('o', 'overlay') ]
+    tiles = [ x + overlays for x in tiles ]
+
+    # Create a grid spec, which we will adjust later based on the size of the images
+    gs = gridspec.GridSpec(2, 2, figure=fig, height_ratios=[0.8, 0.2], hspace=0.03)
+
+    # Within each grid spec, create grid specs for the tiles
+    gss = [gridspec.GridSpecFromSubplotSpec(1, len(tiles), subplot_spec=gs[0,j]) for j in range(2) ]
+
+    # Create axes for each of the subplots
+    axs = [ [] for j in (0,1) ]
+    for j in range(2):
+        for k in range(len(tiles)):
+            ax_jk = fig.add_subplot(gss[j][k]) if j+k == 0 else fig.add_subplot(gss[j][k], sharey=axs[0][0])
+            ax_jk.axis('off')
+            axs[j].append(ax_jk)
+            
     # Color bar properties
-    cb_spacing = 0.1 / (len(image) - 1) if len(image) > 1 else 0.
-    cb_height = 0.9 / len(image) if len(image) > 1 else 1.
+    cb_spacing = 0.1 / (nimg - 1) if nimg > 1 else 0.
+    cb_height = 0.9 / nimg if nimg > 1 else 1.
+
+    # Resample the images into the space of the main image if they don't occupy the same space
+    main = images[0]
+    iresam = [ sitk.Resample(im, main) if j > 0 and not sitk_check_same_space(im, main) 
+                                       else im for j, im in enumerate(images) ]
+    
+    # Extract voxel arrays for all images 
+    voxels = [ sitk.GetArrayFromImage(im) for im in iresam ]
+
+    # Compute vmin/vmax that will be used for each of the images
+    vmin = [ np.quantile(v, 0.001) if vmin[j] is None else vmin[j] for j,v in enumerate(voxels) ]
+    vmax = [ np.quantile(v, 0.999) if vmax[j] is None else vmax[j] for j,v in enumerate(voxels) ]
+
+    # Adjust vmin/vmax for RGB images, because imshow only allows them to be in 0-1 range
+    for j in range(len(voxels)):
+        if iresam[j].GetNumberOfComponentsPerPixel() == 3:
+            voxels[j] = np.clip((voxels[j] - vmin[j]) / (vmin[j] - vmax[j]), 0, 1)
+            vmin[j], vmax[j] = 0, 1
 
     # Get the first (main) image and cursor position
-    main = image[0]
     cursor = np.array(main.GetSize()) // 2 if cursor is None else cursor
 
-    # Plot image and overlays
-    for j, im in enumerate(image):
+    # Iterate over the tiles
+    for t in range(len(tiles)):
 
-        # Check if images occupy the same space
-        if j > 0 and not sitk_check_same_space(im, main):
-            print(f'Image {j} geometry does not match the first image; resampling using identity transform')
-            im = sitk.Resample(im, main)
+        # Iterate over the images in that tile
+        for i, j in enumerate(tiles[t]):
+            param = { 
+                'vmin': vmin[j], 'vmax': vmax[j], 
+                'cmap': special_colormap(cmap[j]), 
+                'alpha': 1.0 if i == 0 else alpha }
 
-        voxels = sitk.GetArrayFromImage(im)
-        param = { 
-            'vmin': np.quantile(voxels, 0.001) if vmin[j] is None else vmin[j], 
-            'vmax': np.quantile(voxels, 0.999) if vmax[j] is None else vmax[j], 
-            'cmap': special_colormap(cmap[j]), 
-            'alpha': 1.0 if j == 0 else alpha }
+            # Get the type of the color map and assign it to the is_discrete array
+            is_discrete = isinstance(plt.get_cmap(param['cmap']), matplotlib.colors.ListedColormap)
+
+            # Get the extents of the plot
+            q_s, ext_s = plot_anat(axs[0][t], iresam[j], voxels[j], 'sagittal', is_discrete, cursor, **param)
+            q_c, ext_c = plot_anat(axs[1][t], iresam[j], voxels[j], 'coronal', is_discrete, cursor, **param)
+
+            # Adjust the grid widths and figure widths for the top level grid
+            if t == 0 and i == 0:
+                gs.set_width_ratios([ext_s[1], ext_c[1]])
         
-        # Adjust vmin/vmax for RGB images
-        if im.GetNumberOfComponentsPerPixel() == 3:
-            voxels = np.clip((voxels - param['vmin']) / (param['vmax'] - param['vmin']), 0, 1)
-            param['vmin'], param['vmax'] = 0, 1
-
-        # Get the type of the color map and assign it to the is_discrete array
-        is_discrete = isinstance(plt.get_cmap(param['cmap']), matplotlib.colors.ListedColormap)
-
-        # Get the extents of the plot
-        q_s, ext_s = plot_anat(axs[0], im, voxels, 'sagittal', is_discrete, cursor, **param)
-        q_c, ext_c = plot_anat(axs[1], im, voxels, 'coronal', is_discrete, cursor, **param)
-
-        # Adjust the grid widths and figure widths
-        if j == 0:
-            gs.set_width_ratios([ext_s[1], ext_c[1]])
-        
-        # Work out the position of the color bar
-        cax = axs[1].inset_axes([1.04, j * (cb_spacing + cb_height), 0.05, cb_height])
-        cbar = plt.colorbar(q_s, orientation='vertical', ax=axs[1], cax=cax)
+    # Generate the color bars
+    gss_cb = gridspec.GridSpecFromSubplotSpec(1, len(iresam), subplot_spec=gs[1,:])
+    for j in range(len(iresam)):
+        ax_cb = fig.add_subplot(gss_cb[j])
+        ax_cb.get_yaxis().set_visible(False)
+        ax_cb.imshow(np.linspace(vmin[j], vmax[j], 256)[None,:], cmap=cmap[j], vmin=vmin[j], vmax=vmax[j], aspect='auto')
         auto_label = 'Main Image' if j == 0 else f'Overlay {j}'
-        cbar.set_label(label=auto_label if name[j] is None else name[j], fontsize=8)
-        cbar.ax.tick_params(labelsize=8)
+        ax_cb.set_title(auto_label if name[j] is None else name[j], fontsize=10)
         
-    # Adjust width
-    if width:
-        fig.set_figwidth(width) 
-
-    # Add titles to the coronal and sagittal views
+    # Add markers to the coronal and sagittal views
     def marker(ax, text, pos):
         param = {'left': (0.01, 0.5, 'left', 'center'),
                  'right': (0.99, 0.5, 'right', 'center'),
@@ -408,14 +444,26 @@ def view_sitk(image, cursor=None, vmin=None, vmax=None, cmap='gray', alpha=0.5, 
                 transform=ax.transAxes,
                 path_effects=[pe.withStroke(linewidth=3, foreground="black")])
         
-    marker(axs[0], 'A', 'left')
-    marker(axs[0], 'S', 'top')
-    marker(axs[0], 'P', 'right')
-    marker(axs[0], 'I', 'bottom')
+    marker_pos = [
+        { 'A': 'left', 'S': 'top', 'P': 'right', 'I': 'bottom' },
+        { 'R': 'left', 'S': 'top', 'L': 'right', 'I': 'bottom' }
+    ]
     
-    marker(axs[1], 'R', 'left')
-    marker(axs[1], 'S', 'top')
-    marker(axs[1], 'L', 'right')
-    marker(axs[1], 'I', 'bottom')
+    for t in range(len(tiles)):
+        for i, mp in enumerate(marker_pos):
+            for k, v in mp.items():
+                marker(axs[i][t], k, v)
+
+    # Add title at the top
+    if title:
+        fig.suptitle(title)
+
+    # Adjust width and height of the figure, leaving a fixed space for the colorbar
+    if width:
+        height_tiles = ext_s[0] * width / (len(tiles) * (ext_s[1] + ext_c[1]))
+        height_colorbars = 0.7
+        fig.set_figwidth(width) 
+        fig.set_figheight(height_tiles + height_colorbars + (0.3 if title else 0.0))
+        gs.set_height_ratios([height_tiles, height_colorbars])
 
     return fig, axs
