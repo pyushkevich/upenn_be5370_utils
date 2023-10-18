@@ -80,7 +80,7 @@ def hemi_landmark_thickness(
                     reg_size[d] += dots.GetSize()[d] - (reg_index[d] + reg_size[d])
 
             dot_roi = sitk.RegionOfInterest(dots, reg_size, reg_index)
-            seg_roi = sitk.RegionOfInterest(seg, reg_size, reg_index)
+            seg_roi = sitk.RegionOfInterest(seg_bin, reg_size, reg_index)
 
             # Compute the skeleton of the segmentation
             seg_skel = sitk.BinaryThinning(seg_roi)
@@ -107,6 +107,7 @@ def hemi_landmark_thickness(
 
             # Save intermediate outputs
             if intermediate_outputs_base_path:
+                sitk.WriteImage(seg_roi, f'{intermediate_outputs_base_path}_{label:03d}_seg_roi.nii.gz')
                 sitk.WriteImage(seg_skel_thick, f'{intermediate_outputs_base_path}_{label:03d}_skel.nii.gz')
                 sitk.WriteImage(dot_dmap, f'{intermediate_outputs_base_path}_{label:03d}_dot_dmap.nii.gz')
                 sitk.WriteImage(dot_skel_mask, f'{intermediate_outputs_base_path}_{label:03d}_dot_skel_mask.nii.gz')
