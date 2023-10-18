@@ -18,7 +18,8 @@ def point_distance_image(grid_phy, point):
 
 def hemi_landmark_thickness(
     segmentation_image, landmark_image, 
-    gray_matter_label=1, sphere_image=None):
+    gray_matter_label = 1, sphere_image = None,
+    intermediate_outputs_base_path = None):
     """
     Compute the thickness of a cortical segmentation at specific landmarks.
     Inputs:
@@ -26,6 +27,11 @@ def hemi_landmark_thickness(
         landmark_image: filename of an image containing landmarks
         gray_matter_label: label of the gray matter in the segmentation (default: 1)
         sphere_image: optional output image to save maximum inscribed spheres
+        intermediate_outputs_base_path: 
+            if provided, intermediate outputs from the thickness computation will be
+            saved using the provided path as the prefix. For debugging.
+    Returns:
+        dict containing thickness values at specific landmarks
     """
 
     # Read the two images
@@ -98,6 +104,12 @@ def hemi_landmark_thickness(
             masked_skel = sitk.GetArrayFromImage(dot_skel_mask * seg_skel_thick)
             dt = 2.0 * np.max(masked_skel)
             dot_thickness[labels[label]] = dt
+
+            # Save intermediate outputs
+            if intermediate_outputs_base_path:
+                sitk.WriteImage(seg_skel_thick, f'{intermediate_outputs_base_path}_{label:03d}_skel.nii.gz')
+                sitk.WriteImage(dot_dmap, f'{intermediate_outputs_base_path}_{label:03d}_dot_dmap.nii.gz')
+                sitk.WriteImage(dot_skel_mask, f'{intermediate_outputs_base_path}_{label:03d}_dot_skel_mask.nii.gz')
 
             # Fill out the sphere image if requested
             if sphere_image:
